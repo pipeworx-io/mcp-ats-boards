@@ -1,13 +1,21 @@
 # @pipeworx/ats-boards
 
-Public job-board postings across eight applicant-tracking systems (Greenhouse,
-Lever, Ashby, SmartRecruiters, Recruitee, BambooHR, Workday, Workable) — detect
-which ATS a company publishes its careers page on, then read any company's
-open roles without a key. This is NOT the `greenhouse`/`ashby` packs, which
-read the caller's OWN private hiring data with their own API key; this pack
-reads the same public board any browser can see, for any company.
+Public job-board postings across fifteen applicant-tracking systems
+(Greenhouse, Lever, Ashby, SmartRecruiters, Recruitee, BambooHR, Workday,
+Workable, Teamtailor, Personio, Jobvite, Breezy, Pinpoint, Rippling, iCIMS) —
+detect which ATS a company publishes its careers page on, then read any
+company's open roles without a key. This is NOT the `greenhouse`/`ashby`
+packs, which read the caller's OWN private hiring data with their own API
+key; this pack reads the same public board any browser can see, for any
+company.
 
-Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1743+ live data sources. This is an independent, unofficial integration — not affiliated with, endorsed by, or published by the upstream provider.
+Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1807+ live data sources. This is an independent, unofficial integration — not affiliated with, endorsed by, or published by the upstream provider.
+
+Dover was evaluated and dropped: its public board is a client-rendered SPA
+behind a Cloudflare Turnstile challenge, and the underlying jobs API
+(`app.dover.com/api/v1/jobs`) answers HTTP 401 "Authentication credentials
+were not provided" for every query-param combination tried — there is no
+discoverable keyless endpoint.
 
 ## Tools
 
@@ -31,7 +39,7 @@ Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents 
 
 Keyless. Every endpoint below is the same public board data a browser sees on
 a company's own careers page — no account, token or registration on any of
-the eight ATS vendors.
+the fifteen supported ATS vendors.
 
 The one exception is Workable: its public widget is currently blocked by
 Cloudflare from this platform's edge (see "Data sources" below) — not an auth
@@ -49,6 +57,13 @@ rather than returning an empty result.
 - `https://{board_token}.bamboohr.com/careers/list` — BambooHR's public careers-widget endpoint.
 - `https://{tenant}.wd{N}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs` (POST) — Workday's public CXS jobs search. `board_token` encodes all three path parts as `"{tenant}.wd{N}/{site}"`, e.g. `"workday.wd5/Workday"` (read the tenant/wd-number/site straight off the company's own `myworkdayjobs.com` careers URL).
 - `https://apply.workable.com/api/v1/widget/accounts/{board_token}` — Workable's public widget API. **Currently unreachable from this platform's edge**, confirmed live via a throwaway `wrangler dev --remote` Worker on Pipeworx's production Cloudflare account: every one of 5+ attempts (two endpoint shapes — the v1 widget and the v3 `/api/v3/accounts/{account}/jobs`, with and without an `Accept` header, against several real account names, several minutes apart) returned HTTP 429 with `Content-Type: text/plain` and body `error code: 1015` — Cloudflare's OWN bot-mitigation, not a Workable application response. That reads as apply.workable.com's Cloudflare WAF specifically rate-limiting Cloudflare-Worker-to-Cloudflare traffic. The adapter is implemented per Workable's documented widget shape and is ready the moment this changes; until then every live call throws loud, naming the 429, rather than returning an empty board.
+- `https://{board_token}.teamtailor.com/jobs.json` — Teamtailor's keyless JSON Feed (jsonfeed.org v1.1).
+- `https://{board_token}.jobs.personio.com/xml?language=en`, falling back to `.jobs.personio.de` on a 404 — Personio's public XML feed. A company lives on exactly one of the two TLDs with no redirect between them.
+- `https://jobs.jobvite.com/{board_token}` — Jobvite's server-rendered HTML board (no JSON API; the vendor's own feed is per-customer and off by default). Parsed by regex from the `jv-job-list-*` table markup.
+- `https://{board_token}.breezy.hr/json` — Breezy's keyless JSON array.
+- `https://{board_token}.pinpointhq.com/postings.json` — Pinpoint's keyless, officially documented postings JSON.
+- `https://ats.rippling.com/{board_token}/jobs` — Rippling has no separate JSON API (every guessed `/api/...` path 404s); the job list is parsed out of the page's `<script id="__NEXT_DATA__">` hydration data.
+- `https://{board_token}.icims.com/jobs/search?ss=1&in_iframe=1` — iCIMS's documented Talent-Cloud API is partner-gated, but the public career-search page itself is plain server-rendered HTML with no login; parsed by regex. `board_token` is the FULL subdomain label (e.g. `"careers-acme"`) — iCIMS customers don't share one fixed prefix.
 
 ### The silent-zero shape, per ATS (each measured live, not assumed from docs)
 
@@ -65,6 +80,13 @@ from "real board, zero jobs right now" at all:
 | BambooHR | HTTP 200 (not 404!), `Content-Type: text/html` — BambooHR's own marketing homepage, byte-identical across different nonsense subdomains (a wildcard catch-all, not a per-company 404) | HTTP 200 JSON `{"meta":{"totalCount":0},"result":[]}` (confirmed live: `helpscout`, `pantheon`) |
 | Workday | HTTP 404 JSON `{"errorCode":"S21",...,"message":"not found: Job_Posting_Site_ID=..."}` | Not independently confirmed (every real tenant found had jobs); `limit` over 20 is HTTP 400, not an empty page; `offset` past 10,000 returns HTTP 200 with the SAME page as `offset:0` rather than erroring — this pack reports `capped:true` when either cap is hit |
 | Workable | Blocked (HTTP 429, Cloudflare) before any board-shaped answer is reachable from this platform | — |
+| Teamtailor | HTTP 404, `Content-Type: application/json`, body EMPTY (0 bytes) | HTTP 200 JSON Feed `{"items":[...]}` (confirmed live: `career`, `arsenalfc`) |
+| Personio | HTTP 404 `text/html` on BOTH `.com` and `.de` | HTTP 200 XML `<workzag-jobs>` (confirmed live: `kertos` on `.de`, `1nce` on `.com`) |
+| Jobvite | HTTP 200 but 4 silent redirects to a DIFFERENT host (`www.jobvite.com/support/...?invalid=1`) — `fetch`'s default `redirect:'follow'` hides this unless you check `res.redirected` | HTTP 200, no redirect, server-rendered job table (confirmed live: `bagleybagelbites`, 65 rows) |
+| Breezy | HTTP 404, `Content-Type: text/html`, title "Career portal not found" | HTTP 200 JSON array (confirmed live: `breezy`, `duolingo`) |
+| Pinpoint | HTTP 404, `Content-Type: text/html` (Pinpoint's own 404 page) | Not independently confirmed (every real board found had postings); expected HTTP 200 `{"data":[]}` by the same convention |
+| Rippling | HTTP 404, Next.js's own 404 page, no `__NEXT_DATA__` job-posts query | HTTP 200 with a `job-posts` query present but `items:[]` — not independently confirmed (every real board found had postings) |
+| iCIMS | HTTP 404, title `"gone: {subdomain}.icims.com : dc409"` | Not independently confirmed (every real portal found had postings) |
 
 Treating any non-200 as "zero jobs," or SmartRecruiters' `totalFound:0` as a
 confirmed empty board, is the exact silent-zero failure this pack exists to
@@ -127,7 +149,7 @@ directly, instead of just this one's:
 }
 ```
 
-Both URLs reach the same gateway and the same 1743+ data sources. The
+Both URLs reach the same gateway and the same 1807+ data sources. The
 only difference is which pack's tools are listed **directly**; `ask_pipeworx`
 reaches all of them from either one.
 

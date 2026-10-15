@@ -597,14 +597,14 @@ function xmlFaultText(raw: string): string | null {
  * and a leak is a leak regardless of which branch produced it.
  */
 function stripMarkup(s: string): string {
-  return collapse(decodeEntities(s.replace(/<[^>]*>/g, ' ')).replace(/[<>]/g, ' '));
+  return collapse(decodeEntities$shared(s.replace(/<[^>]*>/g, ' ')).replace(/[<>]/g, ' '));
 }
 
 /** The handful of entities that show up in error-page titles. Decoded AFTER
  *  tags are stripped and BEFORE the angle-bracket sweep, so `&lt;script&gt;`
  *  in a title cannot decode into markup that survives — EMBL-EBI's ChEMBL 500
  *  page renders as `500 Internal Server Error &lt; EMBL-EBI` otherwise. */
-function decodeEntities(s: string): string {
+function decodeEntities$shared(s: string): string {
   return s
     .replace(/&(?:amp|#0*38);/gi, '&')
     .replace(/&(?:lt|#0*60);/gi, '<')
@@ -1380,6 +1380,83 @@ async function safeFetchExtended(
  *     list. Do not spend more probing time rediscovering this; it is
  *     consistent and documented.
  *
+ * ── Second wave (fleet #3086, 2026-10-14) — Teamtailor, Personio, Jobvite,
+ *    Breezy, Pinpoint, Rippling, iCIMS added; Dover dropped ──────────────────
+ * Measured live via curl from a laptop AND a throwaway Worker (see
+ * `_edge_probe_worker` note below). Endpoints:
+ *
+ *   TEAMTAILOR  GET {token}.teamtailor.com/jobs.json — a keyless JSON Feed
+ *     (jsonfeed.org v1.1). Unknown subdomain -> HTTP 404, Content-Type
+ *     application/json, body EMPTY (0 bytes, not even `{}`) — status is the
+ *     only signal, never parse-then-check. Confirmed real w/ jobs:
+ *     career.teamtailor.com (Teamtailor itself) and arsenalfc.teamtailor.com.
+ *     Each item carries a schema.org `_jobposting.jobLocation[0].address`;
+ *     no department/remote field in this feed.
+ *
+ *   PERSONIO  GET {token}.jobs.personio.com/xml?language=en, falling back to
+ *     .jobs.personio.de on a 404 — a company is hosted on exactly one of the
+ *     two TLDs and there is no redirect between them, confirmed live
+ *     (1nce -> .com; kertos -> .de; hometogo.com 404'd, never probed .de).
+ *     Unknown subdomain (either TLD) -> HTTP 404 text/html. Real feed is XML
+ *     (`<workzag-jobs><position>...`), parsed by regex (Workers have no
+ *     DOMParser) with basic entity decoding. No per-job URL field; this pack
+ *     builds one as `{token}.jobs.personio.{tld}/job/{id}?language=en`,
+ *     matching the pattern on every indexed Personio job link.
+ *
+ *   JOBVITE  GET jobs.jobvite.com/{token} — server-rendered HTML table
+ *     (`<td class="jv-job-list-name"><a href="/{token}/job/{code}">`), no
+ *     JSON API (the vendor's own feed is per-customer and off by default).
+ *     Unknown token -> HTTP 200 but 4 silent redirects to
+ *     www.jobvite.com/support/job-seeker-support/?invalid=1 — a DIFFERENT
+ *     host, confirmed live (`num_redirects:4`). `fetch()`'s default
+ *     `redirect:'follow'` makes this invisible unless you check
+ *     `res.redirected`; this pack treats any redirect as board_not_found.
+ *     Confirmed real w/ jobs: jobs.jobvite.com/bagleybagelbites (65 rows).
+ *
+ *   BREEZY  GET {token}.breezy.hr/json — keyless JSON array (not wrapped).
+ *     Unknown subdomain -> HTTP 404, Content-Type text/html, title "Career
+ *     portal not found | Breezy HR". Confirmed real w/ jobs: breezy.breezy.hr
+ *     and duolingo.breezy.hr.
+ *
+ *   PINPOINT  GET {token}.pinpointhq.com/postings.json — keyless JSON
+ *     `{data:[...]}`, per Pinpoint's own published docs. Unknown subdomain ->
+ *     HTTP 404, Content-Type text/html (Pinpoint's own 404 page, not JSON).
+ *     Confirmed real w/ jobs: workwithus.pinpointhq.com. A real board with
+ *     zero current postings would be HTTP 200 `{data:[]}` by the same
+ *     200-success-envelope convention every sibling ATS here uses — NOT
+ *     independently confirmed live (every real board probed had postings),
+ *     flagged as such like Recruitee's empty-board case above.
+ *
+ *   RIPPLING  GET ats.rippling.com/{token}/jobs — a Next.js page with NO
+ *     separate JSON API; every guessed `/api/...` path 404'd. The job data is
+ *     server-rendered into a `<script id="__NEXT_DATA__" type="application/
+ *     json">` tag as hydrated react-query state — this pack parses that
+ *     script tag and reads the query whose `queryKey` is
+ *     `["board", token, "job-posts"]`. Unknown token -> HTTP 404,
+ *     Content-Type text/html, Next.js's own 404 page (no `__NEXT_DATA__`
+ *     job-posts query to find). Confirmed real w/ jobs:
+ *     ats.rippling.com/skillable-careers/jobs and .../rearc/jobs.
+ *
+ *   ICIMS  GET {token}.icims.com/jobs/search?ss=1&in_iframe=1 — iCIMS's
+ *     documented Talent-Cloud API is gated behind a partner application, but
+ *     the public career-SEARCH page itself is plain server-rendered HTML
+ *     with no login (`<li class="iCIMS_JobCardItem">` blocks: title via
+ *     `<h3>`, location via the "Job Locations" field, department via the
+ *     "Category" dt/dd pair) — parsed by regex, same category as this pack's
+ *     existing HTML scraping for ats_detect. `token` is the FULL subdomain
+ *     label a company's careers portal uses (e.g. "careers-intrepidsolutions"
+ *     — iCIMS customers don't share one fixed prefix). Unknown subdomain ->
+ *     HTTP 404, title "gone: {subdomain}.icims.com : dc409". Confirmed real
+ *     w/ jobs: careers-intrepidsolutions.icims.com (14 postings).
+ *
+ *   DOVER — DROPPED. app.dover.com/jobs/{slug} is a client-rendered SPA
+ *     behind a Cloudflare Turnstile challenge (the page ships
+ *     `challenges.cloudflare.com/turnstile/v0/api.js`); its underlying jobs
+ *     API, app.dover.com/api/v1/jobs, answers HTTP 401 `{"detail":
+ *     "Authentication credentials were not provided."}` for every query-
+ *     param combination tried (bare, `?company=`, `?careers_page_slug=`) —
+ *     there is no discoverable keyless public endpoint, only a walled one.
+ *
  * ── Persistence (fleet #2754: never module scope) ──────────────────────────
  * The gateway injects its one shared KV namespace as `_cacheKv`
  * (`injectCacheKv: true` on this pack's pack-manifest.json row — same
@@ -1494,7 +1571,23 @@ export type AtsJobsResult = AtsJobsFound | AtsJobsNotFound;
 // re-fetching boards themselves — see workers/scraper/src/subscriptions.ts'
 // evaluateJobPost, fleet #2858) can validate/enumerate the same board types
 // without duplicating this list.
-export const VALID_ATS = ['greenhouse', 'lever', 'ashby', 'smartrecruiters', 'recruitee', 'bamboohr', 'workday', 'workable'] as const;
+export const VALID_ATS = [
+  'greenhouse',
+  'lever',
+  'ashby',
+  'smartrecruiters',
+  'recruitee',
+  'bamboohr',
+  'workday',
+  'workable',
+  'teamtailor',
+  'personio',
+  'jobvite',
+  'breezy',
+  'pinpoint',
+  'rippling',
+  'icims',
+] as const;
 export type Ats = (typeof VALID_ATS)[number];
 
 function requireAts(v: unknown): Ats {
@@ -1804,6 +1897,267 @@ async function fetchWorkable(token: string): Promise<AtsJobsResult> {
   return { found: true, ats: 'workable', board_token: token, total: jobs.length, jobs, data_as_of: nowIso() };
 }
 
+// -- Minimal entity decoder for regex-parsed HTML/XML (Workers have no DOMParser) --
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    .trim();
+}
+
+async function fetchTeamtailor(token: string): Promise<AtsJobsResult> {
+  const sub = assertHostLabel(token, 'board_token');
+  const res = await pwFetch(`https://${sub}.teamtailor.com/jobs.json`, { headers: { Accept: 'application/json' } });
+  if (res.status === 404) {
+    return { found: false, ats: 'teamtailor', board_token: token, reason: 'board_not_found', evidence: 'HTTP 404, empty body — Teamtailor serves no jobs.json for an unknown subdomain.', data_as_of: nowIso() };
+  }
+  if (!res.ok) {
+    throw new Error(`Teamtailor board "${token}" returned HTTP ${res.status}: ${summarizeErrorBody(await res.text())}`);
+  }
+  const data = (await res.json()) as { items?: unknown[] };
+  const jobs: NormalizedJob[] = (data.items ?? []).map((raw) => {
+    const j = raw as Record<string, unknown>;
+    const jp = j._jobposting as Record<string, unknown> | undefined;
+    const locs = jp?.jobLocation as Array<Record<string, unknown>> | undefined;
+    const addr = locs?.[0]?.address as Record<string, unknown> | undefined;
+    const locationParts = [addr?.addressLocality, addr?.addressRegion].filter((v) => typeof v === 'string' && v);
+    return {
+      title: String(j.title ?? ''),
+      location: locationParts.length ? locationParts.join(', ') : null,
+      dept: null,
+      remote: null,
+      comp: null,
+      posted_at: (j.date_published as string) ?? null,
+      url: (j.url as string) ?? null,
+    };
+  });
+  return { found: true, ats: 'teamtailor', board_token: token, total: jobs.length, jobs, data_as_of: nowIso() };
+}
+
+function parsePersonioXml(xml: string, token: string, tld: 'com' | 'de'): NormalizedJob[] {
+  const positions = xml.match(/<position>[\s\S]*?<\/position>/g) ?? [];
+  return positions.map((block) => {
+    const field = (name: string): string | null => {
+      const m = new RegExp(`<${name}>([\\s\\S]*?)<\\/${name}>`).exec(block);
+      return m ? decodeEntities(m[1]) : null;
+    };
+    const id = field('id');
+    const office = field('office');
+    const additional = Array.from(block.matchAll(/<additionalOffices>([\s\S]*?)<\/additionalOffices>/g)).flatMap((m) =>
+      Array.from(m[1].matchAll(/<office>([\s\S]*?)<\/office>/g)).map((o) => decodeEntities(o[1])),
+    );
+    const location = [office, ...additional].filter(Boolean).join(', ') || null;
+    return {
+      title: field('name') ?? '',
+      location,
+      dept: field('department'),
+      remote: location ? /remote/i.test(location) : null,
+      comp: null,
+      posted_at: field('createdAt'),
+      url: id ? `https://${token}.jobs.personio.${tld}/job/${id}?language=en` : null,
+    };
+  });
+}
+
+async function fetchPersonio(token: string): Promise<AtsJobsResult> {
+  const sub = assertHostLabel(token, 'board_token');
+  for (const tld of ['com', 'de'] as const) {
+    const res = await pwFetch(`https://${sub}.jobs.personio.${tld}/xml?language=en`, { headers: { Accept: 'text/xml' } });
+    if (res.status === 404) continue; // try the other TLD — a company lives on exactly one
+    if (!res.ok) {
+      throw new Error(`Personio board "${token}" (.${tld}) returned HTTP ${res.status}: ${summarizeErrorBody(await res.text())}`);
+    }
+    const xml = await res.text();
+    const jobs = parsePersonioXml(xml, sub, tld);
+    return { found: true, ats: 'personio', board_token: token, total: jobs.length, jobs, data_as_of: nowIso() };
+  }
+  return { found: false, ats: 'personio', board_token: token, reason: 'board_not_found', evidence: 'HTTP 404 on both jobs.personio.com and jobs.personio.de — Personio hosts a company on exactly one TLD with no redirect between them, and neither had this subdomain.', data_as_of: nowIso() };
+}
+
+async function fetchJobvite(token: string): Promise<AtsJobsResult> {
+  const slug = assertHostLabel(token, 'board_token');
+  const res = await pwFetch(`https://jobs.jobvite.com/${slug}`, { headers: { Accept: 'text/html' } });
+  if (res.redirected) {
+    // CONFIRMED LIVE: an unknown slug 4-hop redirects to
+    // www.jobvite.com/support/job-seeker-support/?invalid=1 — a different
+    // host — rather than answering 404 on jobs.jobvite.com itself.
+    return { found: false, ats: 'jobvite', board_token: token, reason: 'board_not_found', evidence: `Request redirected to ${res.url} instead of serving the board — Jobvite's "invalid slug" signal.`, data_as_of: nowIso() };
+  }
+  if (!res.ok) {
+    throw new Error(`Jobvite board "${token}" returned HTTP ${res.status}: ${summarizeErrorBody(await res.text())}`);
+  }
+  const html = await res.text();
+  const rows = Array.from(
+    html.matchAll(/<tr>\s*<td class="jv-job-list-name">\s*<a href="([^"]+)"[^>]*>([^<]*)<\/a>\s*<\/td>\s*<td class="jv-job-list-location">([\s\S]*?)<\/td>\s*<\/tr>/g),
+  );
+  const jobs: NormalizedJob[] = rows.map((m) => ({
+    title: decodeEntities(m[2]),
+    location: decodeEntities(m[3].replace(/\s+/g, ' ')) || null,
+    dept: null,
+    remote: null,
+    comp: null,
+    posted_at: null,
+    url: m[1].startsWith('http') ? m[1] : `https://jobs.jobvite.com${m[1]}`,
+  }));
+  return { found: true, ats: 'jobvite', board_token: token, total: jobs.length, jobs, data_as_of: nowIso() };
+}
+
+async function fetchBreezy(token: string): Promise<AtsJobsResult> {
+  const sub = assertHostLabel(token, 'board_token');
+  const res = await pwFetch(`https://${sub}.breezy.hr/json`, { headers: { Accept: 'application/json' } });
+  if (res.status === 404) {
+    return { found: false, ats: 'breezy', board_token: token, reason: 'board_not_found', evidence: 'HTTP 404, Content-Type text/html — Breezy: "Career portal not found".', data_as_of: nowIso() };
+  }
+  if (!res.ok) {
+    throw new Error(`Breezy board "${token}" returned HTTP ${res.status}: ${summarizeErrorBody(await res.text())}`);
+  }
+  const data = (await res.json()) as unknown[];
+  const jobs: NormalizedJob[] = (Array.isArray(data) ? data : []).map((raw) => {
+    const j = raw as Record<string, unknown>;
+    const location = j.location as Record<string, unknown> | undefined;
+    const salary = typeof j.salary === 'string' ? j.salary.trim() : '';
+    return {
+      title: String(j.name ?? ''),
+      location: (location?.name as string) ?? null,
+      dept: (j.department as string) ?? null,
+      remote: typeof location?.is_remote === 'boolean' ? (location.is_remote as boolean) : null,
+      comp: salary || null,
+      posted_at: (j.published_date as string) ?? null,
+      url: (j.url as string) ?? null,
+    };
+  });
+  return { found: true, ats: 'breezy', board_token: token, total: jobs.length, jobs, data_as_of: nowIso() };
+}
+
+async function fetchPinpoint(token: string): Promise<AtsJobsResult> {
+  const sub = assertHostLabel(token, 'board_token');
+  const res = await pwFetch(`https://${sub}.pinpointhq.com/postings.json`, { headers: { Accept: 'application/json' } });
+  if (res.status === 404) {
+    return { found: false, ats: 'pinpoint', board_token: token, reason: 'board_not_found', evidence: 'HTTP 404, Content-Type text/html — Pinpoint\'s own 404 page, not a JSON response.', data_as_of: nowIso() };
+  }
+  if (!res.ok) {
+    throw new Error(`Pinpoint board "${token}" returned HTTP ${res.status}: ${summarizeErrorBody(await res.text())}`);
+  }
+  const data = (await res.json()) as { data?: unknown[] };
+  const jobs: NormalizedJob[] = (data.data ?? []).map((raw) => {
+    const j = raw as Record<string, unknown>;
+    const location = j.location as Record<string, unknown> | undefined;
+    const job = j.job as Record<string, unknown> | undefined;
+    const dept = job?.department as Record<string, unknown> | undefined;
+    const workplaceType = typeof j.workplace_type === 'string' ? j.workplace_type.toLowerCase() : undefined;
+    const min = j.compensation_minimum as number | undefined;
+    const max = j.compensation_maximum as number | undefined;
+    const currency = j.compensation_currency as string | undefined;
+    const comp = j.compensation_visible && (min || max) ? `${currency ?? ''} ${min ?? ''}${max ? `-${max}` : ''}`.trim() : null;
+    return {
+      title: String(j.title ?? ''),
+      location: (location?.city as string) ?? (location?.name as string) ?? null,
+      dept: (dept?.name as string) ?? null,
+      remote: workplaceType ? workplaceType === 'remote' : null,
+      comp,
+      posted_at: null, // not confirmed live — Pinpoint's postings.json carries no date field in any probed response
+      url: (j.url as string) ?? null,
+    };
+  });
+  // Not independently confirmed live for a real board with ZERO current
+  // postings (every probed board had jobs); documented by analogy with every
+  // sibling ATS's 200-success-envelope convention, same as Recruitee above.
+  return { found: true, ats: 'pinpoint', board_token: token, total: jobs.length, jobs, data_as_of: nowIso() };
+}
+
+interface RippleQuery {
+  queryKey?: unknown[];
+  state?: { data?: { items?: unknown[] } };
+}
+
+function parseRipplingNextData(html: string): unknown[] | null {
+  const m = /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/.exec(html);
+  if (!m) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(m[1]);
+  } catch {
+    return null;
+  }
+  const queries = (parsed as { props?: { pageProps?: { dehydratedState?: { queries?: RippleQuery[] } } } })?.props?.pageProps?.dehydratedState?.queries ?? [];
+  const jobPosts = queries.find((q) => Array.isArray(q.queryKey) && q.queryKey[0] === 'board' && q.queryKey[2] === 'job-posts');
+  return jobPosts?.state?.data?.items ?? null;
+}
+
+async function fetchRippling(token: string): Promise<AtsJobsResult> {
+  const slug = assertHostLabel(token, 'board_token');
+  const res = await pwFetch(`https://ats.rippling.com/${slug}/jobs`, { headers: { Accept: 'text/html' } });
+  if (res.status === 404) {
+    return { found: false, ats: 'rippling', board_token: token, reason: 'board_not_found', evidence: 'HTTP 404 — Rippling\'s own Next.js 404 page, no __NEXT_DATA__ job-posts query present.', data_as_of: nowIso() };
+  }
+  if (!res.ok) {
+    throw new Error(`Rippling board "${token}" returned HTTP ${res.status}: ${summarizeErrorBody(await res.text())}`);
+  }
+  const html = await res.text();
+  const items = parseRipplingNextData(html);
+  if (items === null) {
+    throw new Error(`Rippling board "${token}" returned HTTP 200 but no parseable __NEXT_DATA__ job-posts query was found — the page shape may have changed.`);
+  }
+  const jobs: NormalizedJob[] = items.map((raw) => {
+    const j = raw as Record<string, unknown>;
+    const dept = j.department as Record<string, unknown> | undefined;
+    const locs = j.locations as Array<Record<string, unknown>> | undefined;
+    const loc0 = locs?.[0];
+    return {
+      title: String(j.name ?? ''),
+      location: (loc0?.name as string) ?? null,
+      dept: (dept?.name as string) ?? null,
+      remote: typeof loc0?.workplaceType === 'string' ? (loc0.workplaceType as string).toUpperCase() === 'REMOTE' : null,
+      comp: null,
+      posted_at: null,
+      url: (j.url as string) ?? null,
+    };
+  });
+  return { found: true, ats: 'rippling', board_token: token, total: jobs.length, jobs, data_as_of: nowIso() };
+}
+
+function parseIcimsCards(html: string): NormalizedJob[] {
+  const cards = html.split('<li class="iCIMS_JobCardItem">').slice(1);
+  return cards.map((card) => {
+    const titleMatch = /<h3[^>]*>\s*([^<]+?)\s*<\/h3>/.exec(card);
+    const urlMatch = /<a href="([^"]+)" class="iCIMS_Anchor"/.exec(card);
+    const locMatch = /Job Locations<\/span>\s*<span[^>]*>\s*([^<]*?)\s*<\/span>/.exec(card);
+    const deptMatch = /<dt class="iCIMS_JobHeaderField">Category<\/dt>\s*<dd class="iCIMS_JobHeaderData"><span[^>]*>\s*([^<]*?)\s*<\/span>/.exec(card);
+    const rawUrl = urlMatch ? urlMatch[1] : null;
+    return {
+      title: titleMatch ? decodeEntities(titleMatch[1]) : '',
+      location: locMatch && locMatch[1] ? decodeEntities(locMatch[1]) : null,
+      dept: deptMatch && deptMatch[1] ? decodeEntities(deptMatch[1]) : null,
+      remote: null,
+      comp: null,
+      posted_at: null,
+      url: rawUrl ? rawUrl.replace(/\?in_iframe=1$/, '') : null,
+    };
+  });
+}
+
+async function fetchIcims(token: string): Promise<AtsJobsResult> {
+  const sub = assertHostLabel(token, 'board_token');
+  const res = await pwFetch(`https://${sub}.icims.com/jobs/search?ss=1&in_iframe=1`, { headers: { Accept: 'text/html' } });
+  if (res.status === 404) {
+    return { found: false, ats: 'icims', board_token: token, reason: 'board_not_found', evidence: `HTTP 404 — iCIMS: "gone: ${sub}.icims.com : dc409".`, data_as_of: nowIso() };
+  }
+  if (!res.ok) {
+    throw new Error(`iCIMS board "${token}" returned HTTP ${res.status}: ${summarizeErrorBody(await res.text())}`);
+  }
+  const html = await res.text();
+  const jobs = parseIcimsCards(html);
+  // Not independently confirmed live for a real portal with ZERO current
+  // postings — every probed portal had jobs. Documented by analogy, same
+  // disclaimer as Pinpoint/Recruitee above.
+  return { found: true, ats: 'icims', board_token: token, total: jobs.length, jobs, data_as_of: nowIso() };
+}
+
 async function fetchRaw(ats: Ats, token: string, filters: Record<string, unknown> = {}): Promise<AtsJobsResult> {
   switch (ats) {
     case 'greenhouse':
@@ -1822,6 +2176,20 @@ async function fetchRaw(ats: Ats, token: string, filters: Record<string, unknown
       return fetchWorkday(token, filters as { title_query?: string; limit?: number; offset?: number });
     case 'workable':
       return fetchWorkable(token);
+    case 'teamtailor':
+      return fetchTeamtailor(token);
+    case 'personio':
+      return fetchPersonio(token);
+    case 'jobvite':
+      return fetchJobvite(token);
+    case 'breezy':
+      return fetchBreezy(token);
+    case 'pinpoint':
+      return fetchPinpoint(token);
+    case 'rippling':
+      return fetchRippling(token);
+    case 'icims':
+      return fetchIcims(token);
   }
 }
 
@@ -1873,6 +2241,13 @@ function scanHtmlForAts(html: string): DetectCandidate[] {
     { ats: 'bamboohr', re: /([a-z0-9][a-z0-9-]{0,61})\.bamboohr\.com/i },
     { ats: 'workable', re: /apply\.workable\.com\/(?:api\/v\d\/widget\/accounts\/|j\/)?([a-z0-9][a-z0-9_-]{0,63})/i },
     { ats: 'workday', re: /([a-z0-9-]+)\.(wd\d{1,2})\.myworkdayjobs\.com\/(?:[a-z]{2}-[A-Z]{2}\/)?([A-Za-z0-9_.-]+)/i },
+    { ats: 'teamtailor', re: /([a-z0-9][a-z0-9-]{0,61})\.teamtailor\.com/i },
+    { ats: 'personio', re: /([a-z0-9][a-z0-9-]{0,61})\.jobs\.personio\.(?:com|de)/i },
+    { ats: 'jobvite', re: /jobs\.jobvite\.com\/([a-z0-9][a-z0-9_-]{0,63})/i },
+    { ats: 'breezy', re: /([a-z0-9][a-z0-9-]{0,61})\.breezy\.hr/i },
+    { ats: 'pinpoint', re: /([a-z0-9][a-z0-9-]{0,61})\.pinpointhq\.com/i },
+    { ats: 'rippling', re: /ats\.rippling\.com\/([a-z0-9][a-z0-9_-]{0,63})/i },
+    { ats: 'icims', re: /([a-z0-9][a-z0-9-]{0,61})\.icims\.com/i },
   ];
   for (const { ats, re } of patterns) {
     const m = re.exec(html);
@@ -1952,7 +2327,7 @@ async function atsDetect(args: Record<string, unknown>, kv: KvLike | undefined):
 
   if (domain) {
     const slug = domain.split('.')[0];
-    const probeOrder: Ats[] = ['greenhouse', 'lever', 'ashby', 'smartrecruiters', 'recruitee', 'bamboohr'];
+    const probeOrder: Ats[] = ['greenhouse', 'lever', 'ashby', 'smartrecruiters', 'recruitee', 'bamboohr', 'teamtailor', 'personio', 'breezy', 'pinpoint'];
     for (const ats of probeOrder) {
       if (await probeSlug(ats, slug)) {
         const result = {
@@ -1972,7 +2347,7 @@ async function atsDetect(args: Record<string, unknown>, kv: KvLike | undefined):
       reason: 'no_ats_detected',
       checked_scrape: candidates.map((c) => `${c.ats}:${c.board_token}`),
       checked_probe: probeOrder.map((a) => `${a}:${slug}`),
-      note: 'Scraped the careers page and the homepage for ATS links, then slug-probed Greenhouse/Lever/Ashby/SmartRecruiters/Recruitee/BambooHR using the domain label as the board token. None matched. Workday needs a tenant + wd-number + site slug that cannot be guessed from a domain alone, so it is not blind-probed. Workable is not blind-probed either — its public widget is currently blocked by Cloudflare from this platform\'s edge (see ats_jobs with ats:"workable" for the measured 429).',
+      note: 'Scraped the careers page and the homepage for ATS links, then slug-probed Greenhouse/Lever/Ashby/SmartRecruiters/Recruitee/BambooHR/Teamtailor/Personio/Breezy/Pinpoint using the domain label as the board token. None matched. Workday needs a tenant + wd-number + site slug that cannot be guessed from a domain alone, so it is not blind-probed. Jobvite, Rippling and iCIMS use slugs/subdomain prefixes that often do not match the bare domain label either, so they are not blind-probed — pass board_token directly if you already know it. Workable is not blind-probed either — its public widget is currently blocked by Cloudflare from this platform\'s edge (see ats_jobs with ats:"workable" for the measured 429).',
       data_as_of: nowIso(),
     };
   }
@@ -1986,7 +2361,7 @@ const tools: McpToolExport['tools'] = [
   {
     name: 'ats_detect',
     description:
-      'Detect which applicant-tracking system (ATS) a company publishes its public job board on, and its board token. Reads the company\'s careers page (or a given careers_url) for a Greenhouse/Lever/Ashby/SmartRecruiters/Recruitee/BambooHR/Workday/Workable link; falls back to slug-probing the domain name against each board API. Does not read any private/Harvest-key ATS data — only what a public job board already exposes. Discoveries persist so repeat lookups for the same domain are instant.',
+      'Detect which applicant-tracking system (ATS) a company publishes its public job board on, and its board token. Reads the company\'s careers page (or a given careers_url) for a Greenhouse/Lever/Ashby/SmartRecruiters/Recruitee/BambooHR/Workday/Workable/Teamtailor/Personio/Jobvite/Breezy/Pinpoint/Rippling/iCIMS link; falls back to slug-probing the domain name against each board API that supports it. Does not read any private/Harvest-key ATS data — only what a public job board already exposes. Discoveries persist so repeat lookups for the same domain are instant.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -1998,7 +2373,7 @@ const tools: McpToolExport['tools'] = [
   {
     name: 'ats_jobs',
     description:
-      'Fetch normalized job postings from a PUBLIC ATS board you already have the ats + board_token for (use ats_detect or ats_company_jobs if you only have a domain). Returns {found:false, reason:"board_not_found"} for an unknown board — never an empty jobs[] for that case. Lever/Ashby/BambooHR/Recruitee DO distinguish a real zero-job board (found:true, jobs:[]) from an unknown one; SmartRecruiters cannot, and marks that case ambiguous:true. Workday board_token is "<tenant>.wd<N>/<site>" (e.g. "workday.wd5/Workday"); its response states capped:true if your limit/offset hit Workday\'s own pagination limits (limit<=20, offset<=10000). Workable is currently blocked by Cloudflare from this platform\'s edge and will throw a loud error naming the 429, not an empty result.',
+      'Fetch normalized job postings from a PUBLIC ATS board you already have the ats + board_token for (use ats_detect or ats_company_jobs if you only have a domain). Returns {found:false, reason:"board_not_found"} for an unknown board — never an empty jobs[] for that case. Lever/Ashby/BambooHR/Recruitee/Teamtailor/Breezy DO distinguish a real zero-job board (found:true, jobs:[]) from an unknown one; SmartRecruiters cannot (ambiguous:true); Pinpoint and iCIMS have not had a confirmed-empty real board observed live, so a 0-job result from those two is NOT independently confirmed to mean "real board, no jobs" versus a mis-detected token. Workday board_token is "<tenant>.wd<N>/<site>" (e.g. "workday.wd5/Workday"); its response states capped:true if your limit/offset hit Workday\'s own pagination limits (limit<=20, offset<=10000). Workable is currently blocked by Cloudflare from this platform\'s edge and will throw a loud error naming the 429, not an empty result. Dover is NOT supported: its public board is a Cloudflare-Turnstile-gated SPA with no keyless jobs endpoint.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -2006,7 +2381,7 @@ const tools: McpToolExport['tools'] = [
         board_token: {
           type: 'string',
           description:
-            'The board identifier: Greenhouse/Lever/Ashby/SmartRecruiters company slug or id; Recruitee/BambooHR subdomain label; Workable account slug; Workday "<tenant>.wd<N>/<site>".',
+            'The board identifier: Greenhouse/Lever/Ashby/SmartRecruiters/Teamtailor/Personio/Breezy/Pinpoint company slug or subdomain label; Recruitee/BambooHR subdomain label; Jobvite slug (path segment after jobs.jobvite.com/); Rippling slug (path segment after ats.rippling.com/); iCIMS full subdomain label before .icims.com (e.g. "careers-acme" — prefixes vary by customer); Workable account slug; Workday "<tenant>.wd<N>/<site>".',
         },
         filters: {
           type: 'object',
