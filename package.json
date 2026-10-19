@@ -1,6 +1,6 @@
 {
   "name": "@pipeworx/mcp-ats-boards",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "ATS Boards MCP — public job-board postings across eight applicant-tracking systems (keyless).",
   "type": "module",
   "main": "src/index.ts",
@@ -26,7 +26,7 @@
     "@cloudflare/workers-types": "^4.20260405.1"
   },
   "pipeworx": {
-    "sourceHash": "v1-9e7d256f25a7cd59758e98b7272d9697ce44231a57bd7488b6dea1142ee97a44",
-    "sourceCommit": "8dbe088fb6f9d2c88f934173742329b4e20a67d6"
+    "sourceHash": "v1-9c1752cc9563c412beb9efed47c3dad9cfd23f84a3077a322a1382e8c34b5739",
+    "sourceCommit": "54bf7d1c06a0775508a65d0c388dd10ba75174c3"
   }
 }
