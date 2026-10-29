@@ -1,12 +1,20 @@
 {
   "name": "@pipeworx/mcp-ats-boards",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "ATS Boards MCP — public job-board postings across eight applicant-tracking systems (keyless).",
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./tools.json": "./tools.json",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "mcp-ats-boards": "bin/cli.js"
+  },
+  "files": ["bin/", "lib/", "tools.json", "server.json"],
+  "engines": {
+    "node": ">=18"
   },
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "pipeworx", "ats-boards"],
   "license": "MIT",
@@ -14,19 +22,12 @@
     "type": "git",
     "url": "git+https://github.com/pipeworx-io/mcp-ats-boards.git"
   },
-  "scripts": {
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "tsx": "^4.19.0"
-  },
-  "devDependencies": {
-    "typescript": "^5.9.3",
-    "@cloudflare/workers-types": "^4.20260405.1"
-  },
+  "mcpName": "io.github.pipeworx-io/ats-boards",
   "pipeworx": {
-    "sourceHash": "v1-6597d0594bd90a338b917e1696fc195f7b53fecdaa323631177391b3b24e466d",
-    "sourceCommit": "93c7d52ace03a2bb9aee5e6024f6858adab0dd04"
+    "mode": "gateway",
+    "slug": "ats-boards",
+    "gatewaySlug": "ats-boards",
+    "sourceHash": "v1-017946266a723b2e932a80ba3677d474e2b7ca09e26ea73a9d037adb60d14a58",
+    "sourceCommit": "c6136b81713e72ccb22977ca0c0cd981f8c3f081"
   }
 }
