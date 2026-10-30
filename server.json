@@ -3,7 +3,7 @@
   "name": "io.github.pipeworx-io/ats-boards",
   "title": "Ats Boards",
   "description": "ATS Boards MCP — public job-board postings across eight applicant-tracking systems (keyless).",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "websiteUrl": "https://pipeworx.io/packs/ats-boards",
   "repository": {
     "url": "https://github.com/pipeworx-io/mcp-ats-boards",
